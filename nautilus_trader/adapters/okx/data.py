@@ -14,6 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from nautilus_trader.adapters.okx.config import OKXDataClientConfig
@@ -378,44 +379,109 @@ class OKXDataClient(LiveMarketDataClient):
         start = request.start
         end = request.end
 
-        self._log.warning(
-            f"Bar requests time range not implemented: start={start}, end={end}, using no time range",
-        )
-        # TODO: Implement correct time range requests
-        start = None
-        end = None
-
-        # Validate and clamp limit parameter
+        # Validate and adjust the limit parameter based on the time range
         limit = request.limit
-        if limit is not None and limit > 0:
+        
+        # Handle edge cases for limit first
+        if limit is None or limit <= 0:
+            limit = 100  # Default limit
+        
+        # Check if the request requires using the history endpoint (data > 100 days old)
+        use_history_endpoint = False
+        if start is not None:
+            # Handle timezone-aware datetime comparison
+            now = datetime.now(timezone.utc)
+            if start.tzinfo is None:
+                # If start is naive, assume it's UTC
+                start_utc = start.replace(tzinfo=timezone.utc)
+            else:
+                start_utc = start.astimezone(timezone.utc)
+            
+            days_ago = (now - start_utc).days
+            use_history_endpoint = days_ago > 100
+        
+        # Apply endpoint-specific limit validation
+        if use_history_endpoint:
+            if limit > 100:
+                self._log.warning(
+                    f"Requested limit {limit} exceeds OKX history endpoint maximum of 100, "
+                    f"clamping to 100 for {request.bar_type}",
+                )
+                limit = min(limit, 100)
+        else:
+            # Regular endpoint (for recent data or no start time)
             if limit > 300:
                 self._log.warning(
-                    f"Requested limit {limit} exceeds OKX maximum of 300, "
+                    f"Requested limit {limit} exceeds OKX regular endpoint maximum of 300, "
                     f"clamping to 300 for {request.bar_type}",
                 )
-            limit = min(limit, 300)
-        else:
-            limit = 100  # Default limit
+                limit = min(limit, 300)
+        
+        # Additional validation for time range consistency
+        if start is not None and end is not None:
+            # Ensure both times are timezone-aware for comparison
+            start_utc = start if start.tzinfo is not None else start.replace(tzinfo=timezone.utc)
+            end_utc = end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
+            
+            if start_utc >= end_utc:
+                self._log.error(
+                    f"Invalid time range for {request.bar_type}: start time {start_utc} "
+                    f"must be before end time {end_utc}",
+                )
+                return
+        
+        # Warn about potentially excessive time ranges
+        if start is not None and end is not None:
+            # Ensure both times are timezone-aware for comparison
+            start_utc = start if start.tzinfo is not None else start.replace(tzinfo=timezone.utc)
+            end_utc = end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
+            
+            time_range = end_utc - start_utc
+            if time_range.days > 365:
+                self._log.warning(
+                    f"Requesting large time range ({time_range.days} days) for {request.bar_type}, "
+                    f"this may require multiple API calls and take longer to complete",
+                )
 
-        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(request.bar_type))
-
-        pyo3_bars = await self._http_client.request_bars(
-            bar_type=pyo3_bar_type,
-            start=ensure_pydatetime_utc(start),
-            end=ensure_pydatetime_utc(end),
-            limit=limit,
+        self._log.debug(
+            f"Requesting bars: bar_type={request.bar_type}, start={start}, end={end}, "
+            f"limit={limit}, endpoint={'history' if use_history_endpoint else 'regular'}"
         )
-        bars = Bar.from_pyo3_list(pyo3_bars)
 
-        self._handle_bars(
-            request.bar_type,
-            bars,
-            None,
-            request.id,
-            request.start,
-            request.end,
-            request.params,
-        )
+        try:
+            pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(request.bar_type))
+
+            pyo3_bars = await self._http_client.request_bars(
+                bar_type=pyo3_bar_type,
+                start=ensure_pydatetime_utc(start),
+                end=ensure_pydatetime_utc(end),
+                limit=limit,
+            )
+            bars = Bar.from_pyo3_list(pyo3_bars)
+
+            self._handle_bars(
+                request.bar_type,
+                bars,
+                None,
+                request.id,
+                request.start,
+                request.end,
+                request.params,
+            )
+        except Exception as e:
+            self._log.error(
+                f"Failed to request bars for {request.bar_type}: {e}",
+            )
+            # Handle the error by calling the handler with an empty list
+            self._handle_bars(
+                request.bar_type,
+                [],
+                None,
+                request.id,
+                request.start,
+                request.end,
+                request.params,
+            )
 
     # -- WEBSOCKET HANDLERS -----------------------------------------------------------------------
 
