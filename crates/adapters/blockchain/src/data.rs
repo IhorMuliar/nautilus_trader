@@ -48,7 +48,7 @@ use crate::{
     events::pool_created::PoolCreatedEvent,
     exchanges::{dex_extended_map, extended::DexExtended},
     hypersync::client::HyperSyncClient,
-    reporting::BlockSyncMetrics,
+    reporting::{BlockSyncMetrics, PoolSyncMetrics, TokenBatchResult, PoolProcessingResult},
     rpc::{
         BlockchainRpcClient, BlockchainRpcClientAny,
         chains::{
@@ -718,22 +718,33 @@ impl BlockchainDataClient {
     }
 
     /// Synchronizes token and pool data for a specific DEX from the specified block.
+    /// Uses streaming approach with batched token fetching and integrated metrics.
     pub async fn sync_exchange_pools(
         &mut self,
         dex_id: &str,
         from_block: Option<u64>,
         to_block: Option<u64>,
     ) -> anyhow::Result<()> {
+        // Configuration constants
+        const TOKEN_BATCH_SIZE: usize = 100; // Tokens per multicall
+        const POOL_BUFFER_SIZE: usize = 150; // Slightly larger to handle token fetch latency
+        const PROGRESS_INTERVAL: u64 = 10_000; // Log every 10k pools discovered
+        
         let from_block = from_block.unwrap_or(0);
-
         tracing::info!(
-            "Syncing Dex exchange pools for {dex_id} from block {from_block}{}",
+            "Starting streaming sync for {dex_id} from block {from_block}{}",
             to_block.map_or(String::new(), |block| format!(" to {block}"))
         );
 
+        // Initialize metrics
+        let mut metrics = PoolSyncMetrics::new(PROGRESS_INTERVAL);
+
+        // Get DEX configuration
         let dex = self.get_dex(dex_id)?.clone();
         let factory_address = dex.factory.as_ref();
         let pair_created_event_signature = dex.pool_created_event.as_ref();
+        
+        // Create event stream
         let pools_stream = self
             .hypersync_client
             .request_contract_events_stream(
@@ -747,50 +758,167 @@ impl BlockchainDataClient {
 
         tokio::pin!(pools_stream);
 
-        // Collect all unique token addresses and pool events
-        let mut token_addresses = HashSet::new();
-        let mut pool_events = Vec::new();
+        // Streaming state
+        let mut token_buffer: HashSet<String> = HashSet::new();
+        let mut pool_buffer: Vec<PoolCreatedEvent> = Vec::new();
+        let mut pending_tokens: HashSet<String> = HashSet::new(); // Tokens currently being fetched
 
+        // Process pool events as they arrive
         while let Some(log) = pools_stream.next().await {
             let pool = dex.parse_pool_created_event(log)?;
-            token_addresses.insert(pool.token0.to_string());
-            token_addresses.insert(pool.token1.to_string());
-            pool_events.push(pool);
-        }
-
-        // Batch process all unique tokens
-        let token_vec: Vec<String> = token_addresses.into_iter().collect();
-        if !token_vec.is_empty() {
-            tracing::info!("Batch processing {} unique tokens from {} pools", token_vec.len(), pool_events.len());
-            self.process_tokens_batch(token_vec).await?;
-        }
-
-        // Now process pools (tokens should be in cache)
-        let mut processed_pools = 0;
-        let mut skipped_pools = 0;
-        
-        for pool in pool_events {
-            // Check if both tokens are in cache
-            if self.cache.get_token(&pool.token0).is_some() 
-                && self.cache.get_token(&pool.token1).is_some() {
-                self.process_pool(&dex.dex, pool).await?;
-                processed_pools += 1;
-            } else {
-                tracing::warn!(
-                    "Skipping pool {} due to missing token data (token0: {}, token1: {})",
-                    pool.pool_address,
-                    pool.token0,
-                    pool.token1
-                );
-                skipped_pools += 1;
+            
+            // Record pool discovery
+            metrics.record_pool_discovered();
+            
+            // Collect unique tokens that need fetching
+            for token_addr in [&pool.token0, &pool.token1] {
+                let addr_str = token_addr.to_string();
+                if self.cache.get_token(token_addr).is_none() 
+                    && !pending_tokens.contains(&addr_str) {
+                    token_buffer.insert(addr_str.clone());
+                }
+            }
+            
+            pool_buffer.push(pool);
+            
+            // Trigger batch fetch when buffer is full
+            if token_buffer.len() >= TOKEN_BATCH_SIZE {
+                self.flush_token_batch(&mut token_buffer, &mut pending_tokens, &mut metrics).await?;
+            }
+            
+            // Process pools when buffer is getting full
+            if pool_buffer.len() >= POOL_BUFFER_SIZE {
+                self.process_ready_pools(&dex.dex, &mut pool_buffer, &mut metrics).await?;
+            }
+            
+            // Log progress at intervals
+            if metrics.should_log_progress() {
+                metrics.log_streaming_progress(dex_id);
             }
         }
         
-        tracing::info!(
-            "Pool sync completed for {dex_id}: {} pools processed, {} skipped",
-            processed_pools,
-            skipped_pools
+        // Process remaining tokens and pools
+        if !token_buffer.is_empty() {
+            self.flush_token_batch(&mut token_buffer, &mut pending_tokens, &mut metrics).await?;
+        }
+        
+        // Process all remaining pools
+        while !pool_buffer.is_empty() {
+            let initial_size = pool_buffer.len();
+            self.process_ready_pools(&dex.dex, &mut pool_buffer, &mut metrics).await?;
+            
+            // If no pools were processed, it means remaining pools have missing tokens
+            if pool_buffer.len() == initial_size {
+                for pool in pool_buffer.drain(..) {
+                    tracing::warn!(
+                        "Skipping pool {} - tokens not available (token0: {}, token1: {})",
+                        pool.pool_address,
+                        pool.token0,
+                        pool.token1
+                    );
+                    metrics.record_pools_processed(0, 1);
+                }
+            }
+        }
+        
+        // Log final statistics
+        metrics.log_final_summary(dex_id);
+        Ok(())
+    }
+
+    /// Flushes the token buffer by fetching token info in batch
+    async fn flush_token_batch(
+        &mut self,
+        token_buffer: &mut HashSet<String>,
+        pending_tokens: &mut HashSet<String>,
+        metrics: &mut PoolSyncMetrics,
+    ) -> anyhow::Result<()> {
+        let batch: Vec<String> = token_buffer.drain().collect();
+        if batch.is_empty() {
+            return Ok(());
+        }
+        
+        let unique_count = batch.len();
+        tracing::debug!("Flushing batch of {} unique tokens", unique_count);
+        
+        // Mark tokens as pending
+        pending_tokens.extend(batch.iter().cloned());
+        
+        // Process the batch
+        let batch_start = std::time::Instant::now();
+        self.process_tokens_batch(batch.clone()).await?;
+        let batch_duration = batch_start.elapsed();
+        
+        // Count successes and failures
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        
+        for token_addr in &batch {
+            if let Ok(addr) = validate_address(token_addr) {
+                if self.cache.get_token(&addr).is_some() {
+                    success_count += 1;
+                } else {
+                    failure_count += 1;
+                }
+            } else {
+                failure_count += 1;
+            }
+            pending_tokens.remove(token_addr);
+        }
+        
+        // Update metrics
+        metrics.record_token_batch(unique_count as u64, success_count, failure_count);
+        
+        tracing::debug!(
+            "Token batch completed in {:.2}s: {} successful, {} failed",
+            batch_duration.as_secs_f64(),
+            success_count,
+            failure_count
         );
+        
+        Ok(())
+    }
+
+    /// Processes pools that have their tokens available in cache
+    async fn process_ready_pools(
+        &mut self,
+        dex: &Dex,
+        pool_buffer: &mut Vec<PoolCreatedEvent>,
+        metrics: &mut PoolSyncMetrics,
+    ) -> anyhow::Result<()> {
+        let mut remaining_pools = Vec::new();
+        let mut processed_count = 0;
+        let mut skipped_count = 0;
+        
+        for pool in pool_buffer.drain(..) {
+            // Check if both tokens are available in cache
+            if self.cache.get_token(&pool.token0).is_some() 
+                && self.cache.get_token(&pool.token1).is_some() {
+                // Process the pool
+                match self.process_pool(dex, pool.clone()).await {
+                    Ok(()) => processed_count += 1,
+                    Err(e) => {
+                        tracing::error!("Failed to process pool {}: {}", pool.pool_address, e);
+                        skipped_count += 1;
+                    }
+                }
+            } else {
+                // Keep pool for later processing
+                remaining_pools.push(pool);
+            }
+        }
+        
+        // Put unprocessed pools back in buffer
+        *pool_buffer = remaining_pools;
+        
+        // Update metrics
+        if processed_count > 0 || skipped_count > 0 {
+            metrics.record_pools_processed(processed_count, skipped_count);
+        }
+        
+        if !pool_buffer.is_empty() {
+            tracing::debug!("{} pools waiting for tokens", pool_buffer.len());
+        }
         
         Ok(())
     }
