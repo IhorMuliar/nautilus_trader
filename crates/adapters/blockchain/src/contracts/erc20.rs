@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use alloy::{primitives::Address, sol, sol_types::SolCall};
 
@@ -200,6 +200,100 @@ impl Erc20Contract {
             ))
         })
     }
+
+    /// Fetches token information for multiple tokens in a single multicall.
+    ///
+    /// This method is highly efficient for fetching metadata for many tokens at once,
+    /// reducing the number of RPC calls from N to 1.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the multicall itself fails. Individual token failures
+    /// are captured in the Result values of the returned HashMap.
+    pub async fn batch_fetch_token_info(
+        &self,
+        token_addresses: &[Address],
+    ) -> Result<HashMap<Address, Result<TokenInfo, String>>, BlockchainRpcClientError> {
+        if token_addresses.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Build calls for all tokens (3 calls per token)
+        let mut calls = Vec::with_capacity(token_addresses.len() * 3);
+        
+        for token_address in token_addresses {
+            calls.extend([
+                ContractCall {
+                    target: *token_address,
+                    allow_failure: true,  // Allow individual token failures
+                    call_data: ERC20::nameCall.abi_encode(),
+                },
+                ContractCall {
+                    target: *token_address,
+                    allow_failure: true,
+                    call_data: ERC20::symbolCall.abi_encode(),
+                },
+                ContractCall {
+                    target: *token_address,
+                    allow_failure: true,
+                    call_data: ERC20::decimalsCall.abi_encode(),
+                },
+            ]);
+        }
+
+        // Execute all calls in one RPC
+        let results = self.base.execute_multicall(calls).await?;
+        
+        // Process results in chunks of 3 (name, symbol, decimals)
+        let mut token_infos = HashMap::with_capacity(token_addresses.len());
+        
+        for (i, token_address) in token_addresses.iter().enumerate() {
+            let base_idx = i * 3;
+            
+            // Ensure we have all 3 results for this token
+            if base_idx + 2 >= results.len() {
+                token_infos.insert(
+                    *token_address,
+                    Err("Incomplete results from multicall".to_string()),
+                );
+                continue;
+            }
+            
+            let token_info = parse_batch_token_results(&results[base_idx..base_idx + 3]);
+            token_infos.insert(*token_address, token_info);
+        }
+        
+        Ok(token_infos)
+    }
+
+    /// Fetches token information for multiple tokens with automatic chunking.
+    ///
+    /// This method handles large token lists by breaking them into smaller chunks
+    /// to avoid hitting multicall size limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_addresses` - The list of token addresses to fetch info for
+    /// * `chunk_size` - Maximum number of tokens per multicall (recommended: 100-300)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any multicall fails. Individual token failures
+    /// are captured in the Result values of the returned HashMap.
+    pub async fn batch_fetch_token_info_chunked(
+        &self,
+        token_addresses: &[Address],
+        chunk_size: usize,
+    ) -> Result<HashMap<Address, Result<TokenInfo, String>>, BlockchainRpcClientError> {
+        let mut all_results = HashMap::with_capacity(token_addresses.len());
+        
+        for chunk in token_addresses.chunks(chunk_size) {
+            let chunk_results = self.batch_fetch_token_info(chunk).await?;
+            all_results.extend(chunk_results);
+        }
+        
+        Ok(all_results)
+    }
 }
 
 /// Parses a string result from a multicall response.
@@ -265,5 +359,46 @@ fn parse_multicall_u8_result(
         BlockchainRpcClientError::AbiDecodingError(format!(
             "Failed to decode {field_name}: {e}"
         ))
+    })
+}
+
+/// Parses token information from a slice of 3 multicall results.
+///
+/// Expects results in order: name, symbol, decimals.
+/// Returns Ok(TokenInfo) if all three calls succeeded, or an Err with a
+/// descriptive error message if any call failed.
+fn parse_batch_token_results(results: &[Multicall3::Result]) -> Result<TokenInfo, String> {
+    if results.len() != 3 {
+        return Err("Expected exactly 3 results per token".to_string());
+    }
+
+    // Parse name
+    let name = if results[0].success && !results[0].returnData.is_empty() {
+        ERC20::nameCall::abi_decode_returns(&results[0].returnData)
+            .map_err(|e| format!("Failed to decode name: {e}"))?
+    } else {
+        return Err("Failed to fetch token name".to_string());
+    };
+
+    // Parse symbol
+    let symbol = if results[1].success && !results[1].returnData.is_empty() {
+        ERC20::symbolCall::abi_decode_returns(&results[1].returnData)
+            .map_err(|e| format!("Failed to decode symbol: {e}"))?
+    } else {
+        return Err("Failed to fetch token symbol".to_string());
+    };
+
+    // Parse decimals
+    let decimals = if results[2].success && !results[2].returnData.is_empty() {
+        ERC20::decimalsCall::abi_decode_returns(&results[2].returnData)
+            .map_err(|e| format!("Failed to decode decimals: {e}"))?
+    } else {
+        return Err("Failed to fetch token decimals".to_string());
+    };
+
+    Ok(TokenInfo {
+        name,
+        symbol,
+        decimals,
     })
 }

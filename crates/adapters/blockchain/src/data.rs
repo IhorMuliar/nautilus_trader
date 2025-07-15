@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{cmp::max, sync::Arc};
+use std::{cmp::max, collections::HashSet, sync::Arc};
 
 use alloy::primitives::U256;
 use futures_util::StreamExt;
@@ -747,29 +747,51 @@ impl BlockchainDataClient {
 
         tokio::pin!(pools_stream);
 
+        // Collect all unique token addresses and pool events
+        let mut token_addresses = HashSet::new();
+        let mut pool_events = Vec::new();
+
         while let Some(log) = pools_stream.next().await {
             let pool = dex.parse_pool_created_event(log)?;
-
-            // If any of the tokens are properly processed, skip the pool creation.
-            if let Err(e) = self.process_token(pool.token0.to_string()).await {
-                tracing::warn!(
-                    "Failed to process token {} with error {e}. Skipping pool {}.",
-                    pool.token0,
-                    pool.pool_address
-                );
-                continue;
-            }
-            if let Err(e) = self.process_token(pool.token1.to_string()).await {
-                tracing::warn!(
-                    "Failed to process token {} with error {e}. Skipping pool {}.",
-                    pool.token1,
-                    pool.pool_address
-                );
-                continue;
-            }
-
-            self.process_pool(&dex.dex, pool).await?;
+            token_addresses.insert(pool.token0.to_string());
+            token_addresses.insert(pool.token1.to_string());
+            pool_events.push(pool);
         }
+
+        // Batch process all unique tokens
+        let token_vec: Vec<String> = token_addresses.into_iter().collect();
+        if !token_vec.is_empty() {
+            tracing::info!("Batch processing {} unique tokens from {} pools", token_vec.len(), pool_events.len());
+            self.process_tokens_batch(token_vec).await?;
+        }
+
+        // Now process pools (tokens should be in cache)
+        let mut processed_pools = 0;
+        let mut skipped_pools = 0;
+        
+        for pool in pool_events {
+            // Check if both tokens are in cache
+            if self.cache.get_token(&pool.token0).is_some() 
+                && self.cache.get_token(&pool.token1).is_some() {
+                self.process_pool(&dex.dex, pool).await?;
+                processed_pools += 1;
+            } else {
+                tracing::warn!(
+                    "Skipping pool {} due to missing token data (token0: {}, token1: {})",
+                    pool.pool_address,
+                    pool.token0,
+                    pool.token1
+                );
+                skipped_pools += 1;
+            }
+        }
+        
+        tracing::info!(
+            "Pool sync completed for {dex_id}: {} pools processed, {} skipped",
+            processed_pools,
+            skipped_pools
+        );
+        
         Ok(())
     }
 
@@ -794,6 +816,78 @@ impl BlockchainDataClient {
             self.cache.add_token(token).await?;
         }
 
+        Ok(())
+    }
+
+    /// Processes multiple tokens in batch, fetching and caching their metadata efficiently.
+    ///
+    /// This method reduces the number of RPC calls by using multicall to fetch
+    /// information for multiple tokens in a single request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the batch fetch fails. Individual token failures are
+    /// logged but do not cause the entire operation to fail.
+    pub async fn process_tokens_batch(&mut self, token_addresses: Vec<String>) -> anyhow::Result<()> {
+        // Validate addresses and filter out already cached tokens
+        let mut uncached_addresses = Vec::new();
+        
+        for address_str in token_addresses {
+            match validate_address(&address_str) {
+                Ok(address) => {
+                    if self.cache.get_token(&address).is_none() {
+                        uncached_addresses.push(address);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Invalid token address {address_str}: {e}");
+                }
+            }
+        }
+        
+        if uncached_addresses.is_empty() {
+            tracing::debug!("All tokens already cached, skipping batch fetch");
+            return Ok(());
+        }
+        
+        tracing::info!("Batch fetching info for {} uncached tokens", uncached_addresses.len());
+        
+        // Batch fetch token info with automatic chunking
+        let token_infos = self.tokens
+            .batch_fetch_token_info_chunked(&uncached_addresses, 100)
+            .await?;
+        
+        // Process results and add to cache
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        
+        for (address, result) in token_infos {
+            match result {
+                Ok(token_info) => {
+                    let token = Token::new(
+                        self.chain.clone(),
+                        address,
+                        token_info.name,
+                        token_info.symbol,
+                        token_info.decimals,
+                    );
+                    tracing::debug!("Saving fetched token {token} in the cache");
+                    self.cache.add_token(token).await?;
+                    success_count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch token info for {address}: {e}");
+                    failure_count += 1;
+                }
+            }
+        }
+        
+        tracing::info!(
+            "Batch token fetch completed: {} successful, {} failed",
+            success_count,
+            failure_count
+        );
+        
         Ok(())
     }
 
