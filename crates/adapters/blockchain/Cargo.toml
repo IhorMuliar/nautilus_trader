@@ -22,6 +22,7 @@ crate-type = ["rlib", "cdylib"]
 default = ["defi"]
 hypersync = ["hypersync-client", "hypersync-schema"]
 python = ["pyo3", "nautilus-network/python"]
+extension-module = ["pyo3/extension-module", "nautilus-network/extension-module"]
 defi = [
   "nautilus-common/defi",
   "nautilus-data/defi",

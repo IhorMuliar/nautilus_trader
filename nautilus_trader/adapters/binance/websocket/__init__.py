@@ -12,3 +12,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+
+from nautilus_trader.adapters.binance.websocket.client import BinanceWebSocketClient
+from nautilus_trader.adapters.binance.websocket.trade_client import BinanceTradeWSClient
+from nautilus_trader.adapters.binance.websocket.trade_client import BinanceTradeWebSocketError
+
+
+__all__ = [
+    "BinanceWebSocketClient",
+    "BinanceTradeWSClient", 
+    "BinanceTradeWebSocketError",
+]

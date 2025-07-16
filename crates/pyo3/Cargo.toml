@@ -22,6 +22,7 @@ crate-type = ["cdylib"]
 default = []
 extension-module = [
   "pyo3/extension-module",
+  "binance-trade-ws/extension-module",
   "nautilus-common/extension-module",
   "nautilus-core/extension-module",
   "nautilus-cryptography/extension-module",
@@ -29,10 +30,12 @@ extension-module = [
   "nautilus-indicators/extension-module",
   "nautilus-infrastructure/extension-module",
   "nautilus-model/extension-module",
+  "nautilus-network/extension-module",
   "nautilus-persistence/extension-module",
   "nautilus-serialization/extension-module",
   "nautilus-testkit/extension-module",
   "nautilus-trading/extension-module",
+  "nautilus-blockchain/extension-module", #just to fix local configuration bugs
   "nautilus-coinbase-intx/extension-module",
   "nautilus-databento/extension-module",
   "nautilus-tardis/extension-module",
@@ -67,6 +70,8 @@ nautilus-testkit = { workspace = true, features = ["python"] }
 nautilus-trading = { workspace = true, features = ["python"] }
 
 # Adapters
+binance-trade-ws = { workspace = true, features = ["python"] }
+nautilus-blockchain = { workspace = true, features = ["python"] }
 nautilus-coinbase-intx = { workspace = true, features = ["python"] }
 nautilus-databento = { workspace = true, features = ["python"] }
 nautilus-tardis = { workspace = true, features = ["python"] }
