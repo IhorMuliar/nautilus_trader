@@ -158,7 +158,6 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             clock=clock,
         )
 
-        # Configuration
         self._binance_account_type: BinanceAccountType = account_type
         self._use_gtd: bool = config.use_gtd
         self._use_reduce_only: bool = config.use_reduce_only
@@ -209,7 +208,6 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             loop=self._loop,
         )
 
-        # Order submission method hashmap
         self._submit_order_method = {
             OrderType.MARKET: self._submit_market_order,
             OrderType.LIMIT: self._submit_limit_order,

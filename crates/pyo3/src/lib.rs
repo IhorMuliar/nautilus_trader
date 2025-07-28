@@ -104,7 +104,18 @@ fn nautilus_pyo3(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
     re_export_module_attributes(m, n)?;
 
-    // Adapters
+    let n = "binance_trade_ws";
+    let submodule = pyo3::wrap_pymodule!(binance_trade_ws::python::binance_trade_ws);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    re_export_module_attributes(m, n)?;
+
+    // Had local issues with it, to be removed
+    let n = "blockchain";
+    let submodule = pyo3::wrap_pymodule!(nautilus_blockchain::python::blockchain);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    re_export_module_attributes(m, n)?;
 
     let n = "coinbase_intx";
     let submodule = pyo3::wrap_pymodule!(nautilus_coinbase_intx::python::coinbase_intx);

@@ -132,6 +132,10 @@ class BinanceExecClientConfig(LiveExecClientConfig, frozen=True):
         Margin type (isolated or cross) to be used for each symbol. It's applicable to futures only.
     listen_key_ping_max_failures : PositiveInt, default 3
         The maximum number of consecutive listen key ping failures before triggering recovery.
+    use_trade_websocket : bool, default False
+        If the Trade WebSocket API should be used for order operations
+        When enabled, order placement, modification, and cancellation will use WebSocket Trade API.
+        This can provide lower latency and better performance for high-frequency trading.
 
     Warnings
     --------
@@ -160,3 +164,4 @@ class BinanceExecClientConfig(LiveExecClientConfig, frozen=True):
     futures_leverages: dict[BinanceSymbol, PositiveInt] | None = None
     futures_margin_types: dict[BinanceSymbol, BinanceFuturesMarginType] | None = None
     listen_key_ping_max_failures: PositiveInt = 3
+    use_trade_websocket: bool = False
