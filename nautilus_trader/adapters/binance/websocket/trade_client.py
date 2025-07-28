@@ -17,12 +17,14 @@
 Binance Trade WebSocket client for private API operations.
 
 This module provides a WebSocket client specifically designed for Binance's private Trade API
-endpoints, supporting authentication, order operations, and real-time execution reports.
+endpoints, supporting Ed25519 authentication, order operations, and real-time execution reports.
 """
 
 from typing import Any, Callable, Optional
 
 from nautilus_trader.common.component import Logger
+from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
+from nautilus_trader.adapters.binance.common.credentials import get_ed25519_private_key
 
 try:
     from nautilus_trader.core.nautilus_pyo3 import LiveClock
@@ -49,7 +51,7 @@ class BinanceTradeWSClient:
     Provides a Binance Trade WebSocket client for private API operations.
 
     This client handles:
-    - Session authentication with API key/secret
+    - Ed25519 session authentication with Binance WebSocket API
     - Order placement, modification, cancellation, and status requests
     - Real-time execution report events
     - Automatic reconnection with exponential backoff
@@ -61,8 +63,8 @@ class BinanceTradeWSClient:
         The clock for the client.
     api_key : str
         The Binance API key.
-    api_secret : str
-        The Binance API secret.
+    ed25519_private_key : bytes
+        The Ed25519 private key (32 bytes).
     testnet : bool, default False
         Whether to connect to the testnet.
     recv_window : int, optional
@@ -84,7 +86,7 @@ class BinanceTradeWSClient:
         self,
         clock: LiveClock,
         api_key: str,
-        api_secret: str,
+        ed25519_private_key: str,
         testnet: bool = False,
         recv_window: Optional[int] = None,
         heartbeat_interval: Optional[int] = None,
@@ -94,8 +96,8 @@ class BinanceTradeWSClient:
         if not api_key or not api_key.strip():
             raise ValueError("API key cannot be empty")
 
-        if not api_secret or not api_secret.strip():
-            raise ValueError("API secret cannot be empty")
+        if not ed25519_private_key or not ed25519_private_key.strip():
+            raise ValueError("Ed25519 private key cannot be empty")
 
         if not BINANCE_TRADE_WS_AVAILABLE:
             raise ImportError(
@@ -107,12 +109,12 @@ class BinanceTradeWSClient:
         self._log = Logger(type(self).__name__)
         
         self._api_key = api_key
-        self._api_secret = api_secret
+        self._ed25519_private_key = ed25519_private_key
         self._testnet = testnet
         
         self._config = BinanceTradeConfig(
             api_key=api_key,
-            api_secret=api_secret,
+            ed25519_private_key=ed25519_private_key,
             testnet=testnet,
             recv_window=recv_window,
             heartbeat_interval=heartbeat_interval,
@@ -127,6 +129,7 @@ class BinanceTradeWSClient:
             self.set_execution_report_handler(execution_report_handler)
         
         self._log.info(f"Created Binance Trade WebSocket client")
+        self._log.info(f"Authentication: Ed25519")
         self._log.info(f"Testnet: {testnet}")
         self._log.info(f"WebSocket URL: {self._config.websocket_url()}")
 

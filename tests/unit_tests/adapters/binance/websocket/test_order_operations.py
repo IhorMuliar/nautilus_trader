@@ -4,7 +4,7 @@ Unit tests for Binance Trade WebSocket order operations.
 
 import asyncio
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from nautilus_trader.adapters.binance.websocket.trade_client import BinanceTradeWSClient
 from nautilus_trader.adapters.binance.websocket.trade_client import BinanceTradeWebSocketError
@@ -16,12 +16,12 @@ class TestBinanceTradeWebSocketOrderOperations:
     def setup_method(self):
         self.clock = LiveClock()
         self.api_key = "test_api_key"
-        self.api_secret = "test_api_secret"
+        self.ed25519_private_key = "test_ed25519_private_key_1234567890123456"
         
         self.client = BinanceTradeWSClient(
             clock=self.clock,
             api_key=self.api_key,
-            api_secret=self.api_secret,
+            ed25519_private_key=self.ed25519_private_key,
             testnet=True
         )
         
@@ -59,10 +59,8 @@ class TestBinanceTradeWebSocketOrderOperations:
             assert result["side"] == "BUY"
             assert result["status"] == "NEW"
 
-            
     @pytest.mark.asyncio
     async def test_cancel_order_success(self):
-        """Test successful order cancellation."""
         expected_response = {
             "orderId": 12345,
             "symbol": "BTCUSDT",
@@ -85,7 +83,6 @@ class TestBinanceTradeWebSocketOrderOperations:
             
     @pytest.mark.asyncio
     async def test_cancel_order_not_found(self):
-        """Test canceling non-existent order."""
         with patch.object(self.client._client, 'cancel_order') as mock_cancel:
             mock_cancel.side_effect = Exception("Order not found")
             
@@ -167,3 +164,16 @@ class TestBinanceTradeWebSocketOrderOperations:
             assert result["orderId"] == 12345
             assert result["status"] == "PARTIALLY_FILLED"
             assert result["executedQty"] == "0.0005"
+
+    @pytest.mark.asyncio
+    async def test_client_initialization_invalid_key_length(self):
+        try:
+            BinanceTradeWSClient(
+                clock=self.clock,
+                api_key=self.api_key,
+                ed25519_private_key="",
+                testnet=True
+            )
+            assert False, "Expected ValueError to be raised"
+        except ValueError as e:
+            assert "Ed25519 private key cannot be empty" in str(e)

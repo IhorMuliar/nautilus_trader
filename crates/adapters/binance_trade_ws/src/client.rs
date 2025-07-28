@@ -62,7 +62,7 @@ pub struct BinanceTradeWebSocketClient {
 impl BinanceTradeWebSocketClient {
 
     pub fn new(config: BinanceTradeConfig) -> BinanceTradeResult<Self> {
-        let auth = BinanceAuth::new(config.api_key.clone(), config.api_secret.clone());
+        let auth = BinanceAuth::new(config.api_key.clone(), config.ed25519_private_key.clone());
         auth.validate_credentials()?;
 
         Ok(Self {
@@ -260,7 +260,7 @@ impl BinanceTradeWebSocketClient {
             })
         };
         
-        if let Err(e) = Self::authenticate_session(auth, ws_writer).await {
+        if let Err(e) = Self::authenticate_session(auth, ws_writer, response_handlers).await {
             error!("Authentication failed: {}", e);
             return Err(e);
         }
@@ -321,6 +321,7 @@ impl BinanceTradeWebSocketClient {
     async fn authenticate_session(
         auth: &Arc<Mutex<BinanceAuth>>,
         ws_writer: &Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>,
+        response_handlers: &Arc<Mutex<AHashMap<String, tokio::sync::oneshot::Sender<BinanceTradeResponse>>>>,
     ) -> BinanceTradeResult<()> {
         let request_id = "session_logon".to_string();
         let timestamp = BinanceAuth::current_timestamp_ms();
@@ -346,6 +347,13 @@ impl BinanceTradeWebSocketClient {
         
         debug!("Sending session logon request");
         
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+        
+        {
+            let mut handlers = response_handlers.lock().await;
+            handlers.insert(request_id.clone(), response_sender);
+        }
+        
         if let Some(writer) = ws_writer.lock().await.as_ref() {
             writer.send(Message::Text(request_json.into()))
                 .map_err(|e| BinanceTradeError::Connection(format!("Failed to send logon request: {}", e)))?;
@@ -353,14 +361,36 @@ impl BinanceTradeWebSocketClient {
             return Err(BinanceTradeError::Connection("No WebSocket writer available".to_string()));
         }
         
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let response = timeout(Duration::from_secs(10), response_receiver)
+            .await
+            .map_err(|_| BinanceTradeError::Timeout("Session logon timeout".to_string()))?
+            .map_err(|_| BinanceTradeError::Connection("Session logon response channel closed".to_string()))?;
         
-        {
-            let mut auth_guard = auth.lock().await;
-            auth_guard.set_session_authenticated("authenticated".to_string());
+        if response.status == Some(200) {
+            if let Some(result) = response.result {
+                let session_result: Result<crate::types::SessionLogonResult, _> = serde_json::from_value(result);
+                match session_result {
+                    Ok(session_data) => {
+                        let mut auth_guard = auth.lock().await;
+                        auth_guard.set_session_authenticated(session_data.listen_key);
+                        info!("Session authenticated successfully");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        error!("Failed to parse session logon result: {}", e);
+                        Err(BinanceTradeError::Authentication("Invalid session logon response".to_string()))
+                    }
+                }
+            } else {
+                Err(BinanceTradeError::Authentication("Session logon response missing result".to_string()))
+            }
+        } else {
+            let error_msg = response.error
+                .map(|e| format!("Session logon failed: {} - {}", e.code, e.msg))
+                .unwrap_or_else(|| "Session logon failed with unknown error".to_string());
+            error!("{}", error_msg);
+            Err(BinanceTradeError::Authentication(error_msg))
         }
-        
-        Ok(())
     }
 
     async fn handle_message(

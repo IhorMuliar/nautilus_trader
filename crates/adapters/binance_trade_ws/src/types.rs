@@ -4,6 +4,35 @@ use std::collections::HashMap;
 use crate::error::BinanceApiError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinanceTradeConfig {
+    pub api_key: String,
+    pub ed25519_private_key: String,
+    pub testnet: bool,
+    pub recv_window: Option<i64>,
+    pub heartbeat_interval: Option<u64>,
+}
+
+impl BinanceTradeConfig {
+    pub fn new(api_key: String, ed25519_private_key: String, testnet: bool) -> Self {
+        Self {
+            api_key,
+            ed25519_private_key,
+            testnet,
+            recv_window: Some(5000),
+            heartbeat_interval: Some(30),
+        }
+    }
+
+    pub fn websocket_url(&self) -> &str {
+        if self.testnet {
+            "wss://stream.binancefuture.com/ws-fapi/v1"
+        } else {
+            "wss://ws-fapi.binance.com/ws-fapi/v1"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinanceTradeRequest {
     pub id: String,
     pub method: String,
@@ -156,6 +185,36 @@ pub struct OrderResponse {
     pub price_protect: bool,
 }
 
+impl OrderResponse {
+    pub fn to_dict(&self) -> std::collections::HashMap<String, serde_json::Value> {
+        let mut map = std::collections::HashMap::new();
+        map.insert("clientOrderId".to_string(), serde_json::Value::String(self.client_order_id.clone()));
+        map.insert("cumQty".to_string(), serde_json::Value::String(self.cum_qty.clone()));
+        map.insert("cumQuote".to_string(), serde_json::Value::String(self.cum_quote.clone()));
+        map.insert("executedQty".to_string(), serde_json::Value::String(self.executed_qty.clone()));
+        map.insert("orderId".to_string(), serde_json::Value::Number(self.order_id.into()));
+        map.insert("avgPrice".to_string(), serde_json::Value::String(self.avg_price.clone()));
+        map.insert("origQty".to_string(), serde_json::Value::String(self.orig_qty.clone()));
+        map.insert("price".to_string(), serde_json::Value::String(self.price.clone()));
+        map.insert("reduceOnly".to_string(), serde_json::Value::Bool(self.reduce_only));
+        map.insert("side".to_string(), serde_json::Value::String(self.side.clone()));
+        map.insert("positionSide".to_string(), serde_json::Value::String(self.position_side.clone()));
+        map.insert("status".to_string(), serde_json::Value::String(self.status.clone()));
+        map.insert("stopPrice".to_string(), serde_json::Value::String(self.stop_price.clone()));
+        map.insert("closePosition".to_string(), serde_json::Value::Bool(self.close_position));
+        map.insert("symbol".to_string(), serde_json::Value::String(self.symbol.clone()));
+        map.insert("timeInForce".to_string(), serde_json::Value::String(self.time_in_force.clone()));
+        map.insert("type".to_string(), serde_json::Value::String(self.order_type.clone()));
+        map.insert("origType".to_string(), serde_json::Value::String(self.orig_type.clone()));
+        map.insert("activatePrice".to_string(), serde_json::Value::String(self.activate_price.clone()));
+        map.insert("priceRate".to_string(), serde_json::Value::String(self.price_rate.clone()));
+        map.insert("updateTime".to_string(), serde_json::Value::Number(self.update_time.into()));
+        map.insert("workingType".to_string(), serde_json::Value::String(self.working_type.clone()));
+        map.insert("priceProtect".to_string(), serde_json::Value::Bool(self.price_protect));
+        map
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionReport {
     #[serde(rename = "e")]
@@ -166,6 +225,21 @@ pub struct ExecutionReport {
     pub transaction_time: i64,
     #[serde(rename = "o")]
     pub order: OrderExecutionData,
+}
+
+impl ExecutionReport {
+    pub fn to_dict(&self) -> std::collections::HashMap<String, serde_json::Value> {
+        let mut map = std::collections::HashMap::new();
+        map.insert("eventType".to_string(), serde_json::Value::String(self.event_type.clone()));
+        map.insert("eventTime".to_string(), serde_json::Value::Number(self.event_time.into()));
+        map.insert("transactionTime".to_string(), serde_json::Value::Number(self.transaction_time.into()));
+        
+        let order_dict = self.order.to_dict();
+        map.insert("order".to_string(), serde_json::Value::Object(
+            order_dict.into_iter().map(|(k, v)| (k, v)).collect()
+        ));
+        map
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,31 +314,45 @@ pub struct OrderExecutionData {
     pub good_till_date: i64,
 }
 
-#[derive(Debug, Clone)]
-pub struct BinanceTradeConfig {
-    pub api_key: String,
-    pub api_secret: String,
-    pub testnet: bool,
-    pub recv_window: Option<i64>,
-    pub heartbeat_interval: Option<u64>,
-}
-
-impl BinanceTradeConfig {
-    pub fn new(api_key: String, api_secret: String, testnet: bool) -> Self {
-        Self {
-            api_key,
-            api_secret,
-            testnet,
-            recv_window: Some(5000),
-            heartbeat_interval: Some(30), // 30 seconds
+impl OrderExecutionData {
+    pub fn to_dict(&self) -> std::collections::HashMap<String, serde_json::Value> {
+        let mut map = std::collections::HashMap::new();
+        map.insert("symbol".to_string(), serde_json::Value::String(self.symbol.clone()));
+        map.insert("clientOrderId".to_string(), serde_json::Value::String(self.client_order_id.clone()));
+        map.insert("side".to_string(), serde_json::Value::String(self.side.clone()));
+        map.insert("orderType".to_string(), serde_json::Value::String(self.order_type.clone()));
+        map.insert("timeInForce".to_string(), serde_json::Value::String(self.time_in_force.clone()));
+        map.insert("quantity".to_string(), serde_json::Value::String(self.quantity.clone()));
+        map.insert("price".to_string(), serde_json::Value::String(self.price.clone()));
+        map.insert("avgPrice".to_string(), serde_json::Value::String(self.avg_price.clone()));
+        map.insert("stopPrice".to_string(), serde_json::Value::String(self.stop_price.clone()));
+        map.insert("executionType".to_string(), serde_json::Value::String(self.execution_type.clone()));
+        map.insert("orderStatus".to_string(), serde_json::Value::String(self.order_status.clone()));
+        map.insert("orderId".to_string(), serde_json::Value::Number(self.order_id.into()));
+        map.insert("lastExecutedQuantity".to_string(), serde_json::Value::String(self.last_executed_quantity.clone()));
+        map.insert("cumulativeFilledQuantity".to_string(), serde_json::Value::String(self.cumulative_filled_quantity.clone()));
+        map.insert("lastExecutedPrice".to_string(), serde_json::Value::String(self.last_executed_price.clone()));
+        map.insert("commissionAmount".to_string(), serde_json::Value::String(self.commission_amount.clone()));
+        if let Some(asset) = &self.commission_asset {
+            map.insert("commissionAsset".to_string(), serde_json::Value::String(asset.clone()));
         }
-    }
-
-    pub fn websocket_url(&self) -> &'static str {
-        if self.testnet {
-            "wss://stream.binancefuture.com/ws-fapi/v1"
-        } else {
-            "wss://ws-fapi.binance.com/ws-fapi/v1"
-        }
+        map.insert("orderTradeTime".to_string(), serde_json::Value::Number(self.order_trade_time.into()));
+        map.insert("tradeId".to_string(), serde_json::Value::Number(self.trade_id.into()));
+        map.insert("bidsNotional".to_string(), serde_json::Value::String(self.bids_notional.clone()));
+        map.insert("askNotional".to_string(), serde_json::Value::String(self.ask_notional.clone()));
+        map.insert("isMakerSide".to_string(), serde_json::Value::Bool(self.is_maker_side));
+        map.insert("reduceOnly".to_string(), serde_json::Value::Bool(self.reduce_only));
+        map.insert("workingType".to_string(), serde_json::Value::String(self.working_type.clone()));
+        map.insert("originalOrderType".to_string(), serde_json::Value::String(self.original_order_type.clone()));
+        map.insert("positionSide".to_string(), serde_json::Value::String(self.position_side.clone()));
+        map.insert("closePosition".to_string(), serde_json::Value::Bool(self.close_position));
+        map.insert("activationPrice".to_string(), serde_json::Value::String(self.activation_price.clone()));
+        map.insert("callbackRate".to_string(), serde_json::Value::String(self.callback_rate.clone()));
+        map.insert("priceProtect".to_string(), serde_json::Value::Bool(self.price_protect));
+        map.insert("realizedProfit".to_string(), serde_json::Value::String(self.realized_profit.clone()));
+        map.insert("stopPriceWorkingType".to_string(), serde_json::Value::String(self.stop_price_working_type.clone()));
+        map.insert("priceMatch".to_string(), serde_json::Value::String(self.price_match.clone()));
+        map.insert("goodTillDate".to_string(), serde_json::Value::Number(self.good_till_date.into()));
+        map
     }
 } 

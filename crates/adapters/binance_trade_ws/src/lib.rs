@@ -13,19 +13,19 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::BinanceAuth;
     use crate::types::{BinanceTradeConfig, OrderPlaceParams};
 
     #[test]
     fn test_config_creation() {
+        let ed25519_key = "test_ed25519_private_key_1234567890123456".to_string();
         let config = BinanceTradeConfig::new(
             "test_api_key".to_string(),
-            "test_api_secret".to_string(),
+            ed25519_key,
             true,
         );
 
         assert_eq!(config.api_key, "test_api_key");
-        assert_eq!(config.api_secret, "test_api_secret");
+        assert!(!config.ed25519_private_key.is_empty());
         assert!(config.testnet);
         assert_eq!(config.recv_window, Some(5000));
         assert_eq!(config.heartbeat_interval, Some(30));
@@ -34,9 +34,10 @@ mod tests {
 
     #[test]
     fn test_config_production_url() {
+        let ed25519_key = "test_ed25519_private_key_1234567890123456".to_string();
         let config = BinanceTradeConfig::new(
             "test_api_key".to_string(),
-            "test_api_secret".to_string(),
+            ed25519_key,
             false,
         );
 
@@ -73,9 +74,10 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
+        let ed25519_key = "test_ed25519_private_key_1234567890123456".to_string();
         let config = BinanceTradeConfig::new(
-            "valid_api_key".to_string(),
-            "valid_api_secret".to_string(),
+            "valid_api_key_123456".to_string(),
+            ed25519_key,
             true,
         );
 
@@ -85,9 +87,10 @@ mod tests {
 
     #[test]
     fn test_client_creation_invalid_credentials() {
+        let ed25519_key = "".to_string();
         let config = BinanceTradeConfig::new(
             "short".to_string(),
-            "alsoshort".to_string(),
+            ed25519_key,
             true,
         );
 

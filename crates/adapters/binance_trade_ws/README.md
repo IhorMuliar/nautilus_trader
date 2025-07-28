@@ -30,7 +30,7 @@ from nautilus_trader.common.component import LiveClock
 client = BinanceTradeWSClient(
     clock=LiveClock(),
     api_key="your_api_key",
-    api_secret="your_api_secret",
+    ed25519_private_key="your_ed25519_private_key",
     testnet=True
 )
 
@@ -54,7 +54,7 @@ from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
 
 config = BinanceExecClientConfig(
     api_key="your_api_key",
-    api_secret="your_api_secret",
+    ed25519_private_key="your_ed25519_private_key",
     testnet=True,
     use_trade_websocket=True  # Enable WebSocket trading
 )
@@ -70,14 +70,21 @@ python -m pytest tests/unit_tests/adapters/binance/websocket/ -v
 python -m pytest tests/unit_tests/adapters/binance/websocket/test_connection.py -v
 python -m pytest tests/unit_tests/adapters/binance/websocket/test_order_operations.py -v
 python -m pytest tests/unit_tests/adapters/binance/websocket/test_error_handling.py -v
+
+# Run latency benchmark (requires environment variables)
+export BINANCE_API_KEY="your_api_key"
+export BINANCE_ED25519_PRIVATE_KEY="your_ed25519_private_key"
+python examples/live/binance/websocket_vs_rest_latency_test.py
 ```
 
 The Binance Trade WebSocket client provides:
 
 - **Real-time order operations**: place, modify, cancel, status
-- **Session-based authentication**: API key/secret with session logon
+- **Ed25519 session authentication**: Fast session logon without per-request signing
 - **Execution report processing**: Real-time order updates
 - **Integration with Nautilus**: Seamless order management workflow
+
+> **Note**: After `session.logon` with Ed25519, all subsequent requests are sent without signatures, providing significant latency improvements over REST API.
 
 ## **Architecture**
 
@@ -117,10 +124,10 @@ binance_trade_ws/                             # Rust WebSocket Client Crate
 │   │                                         # - Heartbeat and keep-alive management
 │   │
 │   ├── auth.rs                               # Authentication module
-│   │                                         # - API key/secret validation
-│   │                                         # - HMAC-SHA256 signature generation
-│   │                                         # - Session logon handling
-│   │                                         # - Request signing for private endpoints
+│   │                                         # - API key/Ed25519 private key validation
+│   │                                         # - Ed25519 signature generation for session.logon
+│   │                                         # - Session authentication management
+│   │                                         # - Signature-free requests after authentication
 │   │
 │   ├── types.rs                              # Type definitions and serialization
 │   │                                         # - Order request/response structures

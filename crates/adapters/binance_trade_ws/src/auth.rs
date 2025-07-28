@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nautilus_cryptography::signing::hmac_signature;
+use nautilus_cryptography::signing::ed25519_signature;
 use serde_json::Value;
 
 use crate::error::{BinanceTradeError, BinanceTradeResult};
@@ -9,16 +9,16 @@ use crate::types::SessionLogonParams;
 #[derive(Debug, Clone)]
 pub struct BinanceAuth {
     api_key: String,
-    api_secret: String,
+    ed25519_private_key: String,
     session_authenticated: bool,
     listen_key: Option<String>,
 }
 
 impl BinanceAuth {
-    pub fn new(api_key: String, api_secret: String) -> Self {
+    pub fn new(api_key: String, ed25519_private_key: String) -> Self {
         Self {
             api_key,
-            api_secret,
+            ed25519_private_key,
             session_authenticated: false,
             listen_key: None,
         }
@@ -54,8 +54,8 @@ impl BinanceAuth {
     }
 
     pub fn create_signature(&self, payload: &str) -> BinanceTradeResult<String> {
-        let signature = hmac_signature(&self.api_secret, payload)
-            .map_err(|e| BinanceTradeError::Authentication(format!("Failed to create signature: {}", e)))?;
+        let signature = ed25519_signature(self.ed25519_private_key.as_bytes(), payload)
+            .map_err(|e| BinanceTradeError::Authentication(format!("Failed to create Ed25519 signature: {}", e)))?;
         Ok(signature)
     }
 
@@ -113,23 +113,18 @@ impl BinanceAuth {
             ));
         }
 
-        if self.api_secret.is_empty() {
-            return Err(BinanceTradeError::Authentication(
-                "API secret cannot be empty".to_string(),
-            ));
-        }
-
         if self.api_key.len() < 10 {
             return Err(BinanceTradeError::Authentication(
                 "API key appears to be too short".to_string(),
             ));
         }
 
-        if self.api_secret.len() < 10 {
+        if self.ed25519_private_key.is_empty() {
             return Err(BinanceTradeError::Authentication(
-                "API secret appears to be too short".to_string(),
+                "Ed25519 private key cannot be empty".to_string(),
             ));
         }
+
         Ok(())
     }
 }
@@ -137,11 +132,11 @@ impl BinanceAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn test_auth_creation() {
-        let auth = BinanceAuth::new("test_api_key".to_string(), "test_secret".to_string());
+        let private_key = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let auth = BinanceAuth::new("test_api_key".to_string(), private_key);
         assert_eq!(auth.api_key(), "test_api_key");
         assert!(!auth.is_session_authenticated());
         assert!(auth.listen_key().is_none());
@@ -149,7 +144,8 @@ mod tests {
 
     #[test]
     fn test_session_management() {
-        let mut auth = BinanceAuth::new("test_api_key".to_string(), "test_secret".to_string());
+        let private_key = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut auth = BinanceAuth::new("test_api_key".to_string(), private_key);
         
         assert!(!auth.is_session_authenticated());
         
@@ -173,22 +169,22 @@ mod tests {
 
     #[test]
     fn test_credential_validation() {
-        let auth = BinanceAuth::new("valid_api_key".to_string(), "valid_secret".to_string());
+        let valid_key = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let auth = BinanceAuth::new("valid_api_key".to_string(), valid_key);
         assert!(auth.validate_credentials().is_ok());
         
-        let auth = BinanceAuth::new("".to_string(), "valid_secret".to_string());
+        let invalid_key = "00000000000000000000000000000000".to_string();
+        let auth = BinanceAuth::new("valid_api_key".to_string(), invalid_key);
         assert!(auth.validate_credentials().is_err());
         
-        let auth = BinanceAuth::new("valid_api_key".to_string(), "".to_string());
-        assert!(auth.validate_credentials().is_err());
-        
-        let auth = BinanceAuth::new("short".to_string(), "alsoshort".to_string());
+        let auth = BinanceAuth::new("short".to_string(), "00000000000000000000000000000000".to_string());
         assert!(auth.validate_credentials().is_err());
     }
 
     #[test]
     fn test_session_logon_params() {
-        let auth = BinanceAuth::new("test_api_key".to_string(), "test_secret".to_string());
+        let private_key = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let auth = BinanceAuth::new("test_api_key".to_string(), private_key);
         let timestamp = 1640995200000;
         
         let params = auth.create_session_logon_params(timestamp);

@@ -211,7 +211,6 @@ class BinanceExecutionClientWS(BinanceCommonExecutionClient):
             self._log.error(f"Error handling order filled: {e}")
     
     def _handle_order_canceled(self, strategy_id, instrument_id, client_order_id, venue_order_id, ts_event):
-        """Handle CANCELED execution type - order canceled."""
         self.generate_order_canceled(
             strategy_id=strategy_id,
             instrument_id=instrument_id,
@@ -221,7 +220,6 @@ class BinanceExecutionClientWS(BinanceCommonExecutionClient):
         )
     
     def _handle_order_rejected(self, strategy_id, instrument_id, client_order_id, venue_order_id, ts_event, report):
-        """Handle REJECTED execution type - order rejected."""
         reason = report.get("rejectReason", "Unknown rejection reason")
         self.generate_order_rejected(
             strategy_id=strategy_id,
